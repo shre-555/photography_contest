@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+
+{% block title %}{{ contest.Title }}{% endblock %}
+
+{% block content %}
+<div class="card mb-4">
+    <div class="card-body">
+        <h1 class="mb-3">{{ contest.Title }}</h1>
+        <div class="row">
+            <div class="col-md-6">
+                <p><strong>Status:</strong> 
+                    <span class="badge bg-{{ 'success' if contest.Status == 'Active' else 'secondary' }}">
+                        {{ contest.Status }}
+                    </span>
+                </p>
+                <p><strong>Start Date:</strong> {{ contest.StartDate.strftime('%B %d, %Y %I:%M %p') }}</p>
+                <p><strong>End Date:</strong> {{ contest.EndDate.strftime('%B %d, %Y %I:%M %p') }}</p>
+            </div>
+            <div class="col-md-6">
+                <p><strong>Entry Fee:</strong> <span class="text-warning fw-bold">{{ contest.Entry_fee }} coins</span></p>
+                <p><strong>Prize:</strong> <span class="text-success fw-bold">{{ contest.Prize_points }} coins</span></p>
+                <p><strong>Max Participants:</strong> {{ contest.Max_participants }}</p>
+            </div>
+        </div>
+        {% if session.user_id and contest.Status == 'Active' and not user_submitted %}
+        <a href="{{ url_for('submit_photo', contest_id=contest.ContestID) }}" 
+           class="btn btn-primary btn-lg">
+            <i class="bi bi-upload"></i> Submit Photo
+        </a>
+        {% elif user_submitted %}
+        <button class="btn btn-success btn-lg" disabled>
+            <i class="bi bi-check-circle"></i> Already Submitted
+        </button>
+        {% endif %}
+    </div>
+</div>
+
+<div class="card">
+    <div class="card-header bg-white">
+        <h3 class="mb-0">Leaderboard</h3>
+    </div>
+    <div class="card-body">
+        {% if leaderboard %}
+        <div class="row g-4">
+            {% for entry in leaderboard %}
+            <div class="col-md-6 col-lg-4">
+                <div class="photo-card">
+                    {% if entry.Rank <= 3 %}
+                    <div class="rank-badge rank-{{ entry.Rank }}">
+                        <i class="bi bi-trophy-fill"></i> #{{ entry.Rank }}
+                    </div>
+                    {% else %}
+                    <div class="rank-badge">#{{ entry.Rank }}</div>
+                    {% endif %}
+                    <img src="{{ entry.PhotoTitle }}" alt="{{ entry.PhotoTitle }}" class="img-fluid">
+                    <div class="p-3 bg-white">
+                        <h6>{{ entry.PhotoTitle }}</h6>
+                        <p class="mb-2 text-muted">by {{ entry.PhotographerName }}</p>
+                        <div class="d-flex justify-content-between align-items-center">
+                            <span class="badge bg-danger">
+                                <i class="bi bi-heart-fill"></i> {{ entry.TotalVotes }} votes
+                            </span>
+                            {% if session.user_id and contest.Status == 'Active' %}
+                            <form method="POST" action="{{ url_for('vote', photo_id=entry.PhotoID, contest_id=contest.ContestID) }}">
+                                <button type="submit" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-hand-thumbs-up"></i> Vote
+                                </button>
+                            </form>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+            </div>
+            {% endfor %}
+        </div>
+        {% else %}
+        <p class="text-center text-muted py-4">No submissions yet</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
