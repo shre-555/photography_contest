@@ -1,0 +1,28 @@
+{% extends "base.html" %}
+
+{% block title %}Edit Photo{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-6">
+        <div class="card">
+            <div class="card-body p-4">
+                <h2 class="mb-4">Edit Photo</h2>
+                <img src="{{ photo.FilePath }}" class="img-fluid mb-3 rounded" alt="{{ photo.Title }}">
+                <form method="POST">
+                    <div class="mb-3">
+                        <label class="form-label">Photo Title</label>
+                        <input type="text" name="title" class="form-control" value="{{ photo.Title }}" required>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary">
+                            <i class="bi bi-save"></i> Save Changes
+                        </button>
+                        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}

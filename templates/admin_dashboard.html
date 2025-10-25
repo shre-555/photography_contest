@@ -1,0 +1,129 @@
+{% extends "base.html" %}
+
+{% block title %}Admin Dashboard{% endblock %}
+
+{% block content %}
+<h2 class="text-white mb-4">Admin Dashboard</h2>
+
+<!-- Statistics Cards -->
+<div class="row g-4 mb-4">
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <i class="bi bi-people-fill display-4 text-primary"></i>
+                <h3 class="mt-2">{{ total_users }}</h3>
+                <p class="text-muted mb-0">Total Users</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <i class="bi bi-trophy-fill display-4 text-warning"></i>
+                <h3 class="mt-2">{{ total_contests }}</h3>
+                <p class="text-muted mb-0">Total Contests</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <i class="bi bi-images display-4 text-success"></i>
+                <h3 class="mt-2">{{ total_photos }}</h3>
+                <p class="text-muted mb-0">Total Photos</p>
+            </div>
+        </div>
+    </div>
+    <div class="col-md-3">
+        <div class="card text-center">
+            <div class="card-body">
+                <i class="bi bi-heart-fill display-4 text-danger"></i>
+                <h3 class="mt-2">{{ total_votes }}</h3>
+                <p class="text-muted mb-0">Total Votes</p>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Action Buttons -->
+<div class="card mb-4">
+    <div class="card-body">
+        <h4 class="mb-3">Quick Actions</h4>
+        <div class="d-flex gap-2">
+            <a href="{{ url_for('create_contest') }}" class="btn btn-primary">
+                <i class="bi bi-plus-circle"></i> Create Contest
+            </a>
+            <button class="btn btn-info" onclick="updateContestStatuses()">
+                <i class="bi bi-arrow-repeat"></i> Update Contest Statuses
+            </button>
+        </div>
+    </div>
+</div>
+
+<!-- Recent Submissions -->
+<div class="card">
+    <div class="card-header bg-white d-flex justify-content-between align-items-center">
+        <h4 class="mb-0">Recent Submissions</h4>
+    </div>
+    <div class="card-body">
+        {% if submissions %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Photo</th>
+                        <th>Photographer</th>
+                        <th>Contest</th>
+                        <th>Status</th>
+                        <th>Submitted</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for sub in submissions %}
+                    <tr>
+                        <td>{{ sub.PhotoTitle }}</td>
+                        <td>{{ sub.UserName }}</td>
+                        <td>{{ sub.ContestTitle }}</td>
+                        <td>
+                            <span class="badge bg-{{ 'success' if sub.SubmissionStatus == 'Approved' else 'warning' }}">
+                                {{ sub.SubmissionStatus }}
+                            </span>
+                        </td>
+                        <td>{{ sub.SubmissionTimestamp.strftime('%b %d, %Y') }}</td>
+                        <td>
+                            {% if sub.SubmissionStatus == 'Pending' %}
+                            <form method="POST" action="{{ url_for('approve_submission', submission_id=sub.SubmissionID) }}" class="d-inline">
+                                <button type="submit" class="btn btn-sm btn-success">
+                                    <i class="bi bi-check-circle"></i> Approve
+                                </button>
+                            </form>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-center text-muted py-3">No recent submissions</p>
+        {% endif %}
+    </div>
+</div>
+{% endblock %}
+
+{% block extra_js %}
+<script>
+function updateContestStatuses() {
+    if (confirm('Update all contest statuses based on current date/time?')) {
+        fetch('/api/admin/update-statuses', { method: 'POST' })
+            .then(res => res.json())
+            .then(data => {
+                alert('Contest statuses updated!');
+                location.reload();
+            })
+            .catch(err => alert('Error updating statuses'));
+    }
+}
+</script>
+{% endblock %}

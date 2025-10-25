@@ -457,7 +457,7 @@ def admin_register():
         admin_secret = request.form.get('admin_secret')
         
         # Simple secret code check (you can change this)
-        if admin_secret != "PESU_ADMIN_2024":
+        if admin_secret != 'admin123':
             flash('Invalid admin secret code', 'danger')
             return redirect(url_for('admin_register'))
         

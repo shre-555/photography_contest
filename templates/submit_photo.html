@@ -1,0 +1,37 @@
+{% extends "base.html" %}
+
+{% block title %}Submit Photo{% endblock %}
+
+{% block content %}
+<div class="row justify-content-center">
+    <div class="col-md-8">
+        <div class="card">
+            <div class="card-body p-4">
+                <h2 class="mb-4">Submit Photo to {{ contest.Title }}</h2>
+                <div class="alert alert-info">
+                    <strong>Entry Fee:</strong> {{ contest.Entry_fee }} coins will be deducted upon submission
+                </div>
+                <form method="POST" enctype="multipart/form-data">
+                    <div class="mb-3">
+                        <label class="form-label">Photo Title</label>
+                        <input type="text" name="title" class="form-control" required 
+                               placeholder="Enter a catchy title for your photo">
+                    </div>
+                    <div class="mb-3">
+                        <label class="form-label">Upload Photo</label>
+                        <input type="file" name="photo" class="form-control" accept="image/*" required>
+                        <small class="text-muted">Accepted formats: JPG, PNG, GIF (Max 16MB)</small>
+                    </div>
+                    <div class="d-grid gap-2">
+                        <button type="submit" class="btn btn-primary btn-lg">
+                            <i class="bi bi-upload"></i> Submit Photo
+                        </button>
+                        <a href="{{ url_for('contest_detail', contest_id=contest.ContestID) }}" 
+                           class="btn btn-outline-secondary">Cancel</a>
+                    </div>
+                </form>
+            </div>
+        </div>
+    </div>
+</div>
+{% endblock %}
