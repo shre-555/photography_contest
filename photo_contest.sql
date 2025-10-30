@@ -547,7 +547,7 @@ SELECT
     u.Name AS PhotographerName, u.Email AS PhotographerEmail,
     COUNT(v.VoteID) AS TotalVotes,
     pcs.SubmissionTimestamp,
-    RANK() OVER (PARTITION BY c.ContestID ORDER BY COUNT(v.VoteID) DESC) AS Rank
+    RANK() OVER (PARTITION BY c.ContestID ORDER BY COUNT(v.VoteID) DESC) AS `Rank`
 FROM Contest c
 INNER JOIN PhotoContestSubmission pcs ON c.ContestID = pcs.ContestID
 INNER JOIN Photo p ON pcs.PhotoID = p.PhotoID
