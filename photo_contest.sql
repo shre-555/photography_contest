@@ -295,8 +295,9 @@ BEGIN
 END//
 DELIMITER ;
 
--- Procedure 4: Calculate contest winner
+-- Procedure 4: Calculate contest winner (FIXED)
 DELIMITER //
+DROP PROCEDURE IF EXISTS sp_calculate_contest_winner//
 CREATE PROCEDURE sp_calculate_contest_winner(IN p_contest_id INT)
 BEGIN
     SELECT 
@@ -304,7 +305,7 @@ BEGIN
         p.Title AS PhotoTitle,
         u.Name AS PhotographerName,
         COUNT(v.VoteID) AS TotalVotes,
-        RANK() OVER (ORDER BY COUNT(v.VoteID) DESC) AS Rank
+        RANK() OVER (ORDER BY COUNT(v.VoteID) DESC) AS `Rank`
     FROM Photo p
     INNER JOIN PhotoContestSubmission pcs ON p.PhotoID = pcs.PhotoID
     INNER JOIN User u ON p.UserID = u.UserID
