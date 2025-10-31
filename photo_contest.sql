@@ -135,6 +135,31 @@ BEGIN
 END//
 DELIMITER ;
 
+-- Trigger 2: Prevent duplicate voting (this should be handled by UNIQUE constraint)
+-- The UNIQUE KEY unique_vote (UserID, PhotoID, ContestID) should prevent this
+-- But let's add an explicit trigger for better error messages
+
+DELIMITER //
+CREATE TRIGGER trg_prevent_duplicate_voting
+BEFORE INSERT ON Votes
+FOR EACH ROW
+BEGIN
+    DECLARE vote_count INT;
+    
+    -- Check if user has already voted on this photo in this contest
+    SELECT COUNT(*) INTO vote_count
+    FROM Votes
+    WHERE UserID = NEW.UserID 
+      AND PhotoID = NEW.PhotoID 
+      AND ContestID = NEW.ContestID;
+    
+    IF vote_count > 0 THEN
+        SIGNAL SQLSTATE '45000'
+        SET MESSAGE_TEXT = 'You have already voted for this photo in this contest.';
+    END IF;
+END//
+DELIMITER ;
+
 -- This trigger is unchanged
 DELIMITER //
 CREATE TRIGGER trg_prevent_self_voting
