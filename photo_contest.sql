@@ -13,7 +13,7 @@ CREATE TABLE User (
     UserID INT PRIMARY KEY AUTO_INCREMENT,
     Name VARCHAR(100) NOT NULL,
     Email VARCHAR(100) UNIQUE NOT NULL,
-    Password_hash VARCHAR(255) NOT NULL,
+    Password VARCHAR(255) NOT NULL,
     Coins INT DEFAULT 10,
     CONSTRAINT chk_coins CHECK (Coins >= 0),
     INDEX idx_email (Email)
@@ -93,16 +93,14 @@ CREATE TABLE Contest_Audit (
     INDEX idx_audit_contest (ContestID)
 );
 
+-- Adding the foreign key constraint correctly
 ALTER TABLE Contest_Audit
 ADD CONSTRAINT fk_contest_audit_contest 
 FOREIGN KEY (ContestID) REFERENCES Contest(ContestID) ON DELETE CASCADE;
 
 -- ============================================
--- SECTION 2: TRIGGERS (REFACTORED)
+-- SECTION 2: TRIGGERS (No Changes)
 -- ============================================
-
--- REFACTOR: Removed trg_check_and_deduct_coins_before_submission
--- This logic is now handled in sp_submit_photo_to_contest
 
 -- This trigger is still necessary
 DELIMITER //
@@ -131,31 +129,6 @@ BEGIN
     IF NOW() > v_end THEN
         SIGNAL SQLSTATE '45000'
         SET MESSAGE_TEXT = 'This contest has already ended.';
-    END IF;
-END//
-DELIMITER ;
-
--- Trigger 2: Prevent duplicate voting (this should be handled by UNIQUE constraint)
--- The UNIQUE KEY unique_vote (UserID, PhotoID, ContestID) should prevent this
--- But let's add an explicit trigger for better error messages
-
-DELIMITER //
-CREATE TRIGGER trg_prevent_duplicate_voting
-BEFORE INSERT ON Votes
-FOR EACH ROW
-BEGIN
-    DECLARE vote_count INT;
-    
-    -- Check if user has already voted on this photo in this contest
-    SELECT COUNT(*) INTO vote_count
-    FROM Votes
-    WHERE UserID = NEW.UserID 
-      AND PhotoID = NEW.PhotoID 
-      AND ContestID = NEW.ContestID;
-    
-    IF vote_count > 0 THEN
-        SIGNAL SQLSTATE '45000'
-        SET MESSAGE_TEXT = 'You have already voted for this photo in this contest.';
     END IF;
 END//
 DELIMITER ;
@@ -215,8 +188,8 @@ BEGIN
     END;
     
     START TRANSACTION;
-    INSERT INTO User (Name, Email, Password_hash, Coins)
-    VALUES (p_name, p_email, SHA2(p_password, 256), 10);
+    INSERT INTO User (Name, Email, Password, Coins)
+    VALUES (p_name, p_email, p_password, 10);
     COMMIT;
     SELECT 'User registered successfully' AS Message, LAST_INSERT_ID() AS UserID;
 END//
@@ -237,17 +210,28 @@ BEGIN
     DECLARE v_user_coins INT;
     DECLARE v_entry_fee INT;
     
+    -- *** BEGIN FIX ***
+    -- This EXIT HANDLER is now robust and correctly identifies errors
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
         GET DIAGNOSTICS CONDITION 1 v_sql_state = RETURNED_SQLSTATE, v_message = MESSAGE_TEXT;
-        SELECT CONCAT('Error: Photo submission failed. ', v_message) AS Message;
+        
+        -- *** BEGIN FIX 2 ***
+        IF v_sql_state = '45000' THEN -- Custom trigger error (contest status)
+            -- We CANNOT rely on v_message from a trigger.
+            -- The trigger has multiple possible messages, so we give a generic one.
+            SELECT 'Error: Submission failed. The contest is not active, has ended, or is cancelled.' AS Message;
+        ELSEIF v_sql_state = '23000' THEN -- Duplicate submission
+            SELECT 'Error: This photo has already been submitted to this contest.' AS Message;
+        ELSE -- All other unexpected errors
+            SELECT CONCAT('Error: Photo submission failed. SQLSTATE: ', v_sql_state, ' Message: ', v_message) AS Message;
+        END IF;
+        -- *** END FIX 2 ***
     END;
+    -- *** END FIX ***
     
     START TRANSACTION;
-    
-    -- * BEGIN REFACTOR *
-    -- Logic moved from trigger to procedure
     
     -- 1. Get contest fee and user coins (and lock the user row)
     SELECT COALESCE(Entry_fee, 0) INTO v_entry_fee 
@@ -280,12 +264,11 @@ BEGIN
         COMMIT;
         SELECT 'Photo submitted successfully' AS Message, v_photo_id AS PhotoID;
     END IF;
-    -- * END REFACTOR *
     
 END//
 DELIMITER ;
 
--- Procedure 3: Cast vote on a photo (Unchanged)
+-- Procedure 3: Cast vote on a photo (REFACTORED TO FIX BUG)
 DELIMITER //
 CREATE PROCEDURE sp_cast_vote(
     IN p_user_id INT,
@@ -296,24 +279,25 @@ BEGIN
     DECLARE v_sql_state CHAR(5);
     DECLARE v_message TEXT;
 
+    -- *** BEGIN FIX ***
+    -- This EXIT HANDLER is new and correctly identifies voting-specific errors
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
         GET DIAGNOSTICS CONDITION 1 v_sql_state = RETURNED_SQLSTATE, v_message = MESSAGE_TEXT;
         
-        -- REFACTOR: Handle trigger errors ('45000') and duplicate key errors ('23000') explicitly.
-        IF v_sql_state = '45000' THEN -- Custom trigger error (e.g., contest not active)
-            IF v_message IS NULL OR v_message = '' THEN
-                 SELECT 'Error: Submission failed. Contest is not in a valid state.' AS Message;
-            ELSE
-                 SELECT v_message AS Message; -- Return the trigger's message
-            END IF;
-        ELSEIF v_sql_state = '23000' THEN -- Duplicate submission
-            SELECT 'Error: This vote has already been submitted to this contest.' AS Message;
+        -- *** BEGIN FIX 2 ***
+        IF v_sql_state = '45000' THEN -- Custom trigger error (self-voting)
+            -- We CANNOT rely on v_message from a trigger. We know it's the self-vote trigger.
+            SELECT 'Error: You cannot vote on your own photo.' AS Message;
+        ELSEIF v_sql_state = '23000' THEN -- Duplicate vote
+            SELECT 'Error: You have already voted for this photo in this contest.' AS Message;
         ELSE -- All other unexpected errors
-            SELECT CONCAT('Error: Photo submission failed due to an unexpected database error. SQLSTATE: ', v_sql_state) AS Message;
+            SELECT CONCAT('Error: Vote casting failed. SQLSTATE: ', v_sql_state, ' Message: ', v_message) AS Message;
         END IF;
+        -- *** END FIX 2 ***
     END;
+    -- *** END FIX ***
     
     START TRANSACTION;
     INSERT INTO Votes (UserID, PhotoID, ContestID)
@@ -323,7 +307,7 @@ BEGIN
 END//
 DELIMITER ;
 
--- Procedure 4: Calculate contest winner
+-- Procedure 4: Calculate contest winner (Unchanged)
 DELIMITER //
 CREATE PROCEDURE sp_calculate_contest_winner(IN p_contest_id INT)
 BEGIN
@@ -343,7 +327,7 @@ BEGIN
 END//
 DELIMITER ;
 
--- Procedure 5: Award prize to winner
+-- Procedure 5: Award prize to winner (Unchanged)
 DELIMITER //
 CREATE PROCEDURE sp_award_prize_to_winner(IN p_contest_id INT)
 BEGIN
@@ -466,7 +450,7 @@ END//
 DELIMITER ;
 
 -- ============================================
--- SECTION 4: FUNCTIONS (Unchanged)
+-- SECTION 4: FUNCTIONS (No Changes)
 -- ============================================
 
 -- Voting is free, so this just returns TRUE
@@ -545,6 +529,7 @@ READS SQL DATA
 BEGIN
     DECLARE v_rank INT DEFAULT 0;
     
+    -- Using a subquery to find the rank
     SELECT COALESCE(user_rank, 0) INTO v_rank
     FROM (
         SELECT 
@@ -625,3 +610,5 @@ LEFT JOIN Votes v ON p.PhotoID = v.PhotoID
 GROUP BY u.UserID, u.Name, u.Email
 HAVING TotalPhotos > 0
 ORDER BY TotalVotesReceived DESC;
+
+

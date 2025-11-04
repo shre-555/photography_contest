@@ -119,6 +119,26 @@ def allowed_file(filename):
 @app.route('/')
 def index():
     """Home page with active contests"""
+    # Update contest statuses first
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor()
+        cursor.execute("""
+            UPDATE Contest
+            SET Status = CASE
+                WHEN NOW() < StartDate THEN 'Upcoming'
+                WHEN NOW() BETWEEN StartDate AND EndDate THEN 'Active'
+                WHEN NOW() > EndDate THEN 'Completed'
+                ELSE Status
+            END
+            WHERE Status NOT IN ('Cancelled')
+        """)
+        connection.commit()
+        cursor.close()
+        connection.close()
+    except:
+        pass
+    
     contests = execute_query("SELECT * FROM vw_active_contests ORDER BY EndDate ASC")
     return render_template('index.html', contests=contests)
 
@@ -266,14 +286,36 @@ def contest_detail(contest_id):
         flash('Contest not found', 'danger')
         return redirect(url_for('contests'))
     
-    # Get leaderboard
-    leaderboard = execute_query(
-        "SELECT * FROM vw_contest_leaderboard WHERE ContestID = %s ORDER BY `Rank`",
-        (contest_id,)
-    )
+    # Get leaderboard with actual photo file paths
+    leaderboard = execute_query("""
+        SELECT 
+            c.ContestID,
+            c.Title AS ContestTitle,
+            p.PhotoID,
+            p.Title AS PhotoTitle,
+            p.FilePath,
+            u.Name AS PhotographerName,
+            u.Email AS PhotographerEmail,
+            u.UserID AS PhotographerID,
+            COUNT(DISTINCT v.VoteID) AS TotalVotes,
+            pcs.SubmissionTimestamp,
+            pcs.SubmissionStatus,
+            RANK() OVER (ORDER BY COUNT(DISTINCT v.VoteID) DESC) AS `Rank`
+        FROM Contest c
+        INNER JOIN PhotoContestSubmission pcs ON c.ContestID = pcs.ContestID
+        INNER JOIN Photo p ON pcs.PhotoID = p.PhotoID
+        INNER JOIN User u ON p.UserID = u.UserID
+        LEFT JOIN Votes v ON p.PhotoID = v.PhotoID AND v.ContestID = c.ContestID
+        WHERE c.ContestID = %s
+        GROUP BY c.ContestID, c.Title, p.PhotoID, p.Title, p.FilePath, 
+                 u.Name, u.Email, u.UserID, pcs.SubmissionTimestamp, pcs.SubmissionStatus
+        ORDER BY pcs.SubmissionStatus = 'Approved' DESC, `Rank` ASC
+    """, (contest_id,))
     
     # Check if user has submitted
     user_submitted = False
+    user_voted_photos = []
+    
     if 'user_id' in session:
         user_photos = execute_query("""
             SELECT p.PhotoID
@@ -282,9 +324,19 @@ def contest_detail(contest_id):
             WHERE p.UserID = %s AND pcs.ContestID = %s
         """, (session['user_id'], contest_id))
         user_submitted = len(user_photos) > 0 if user_photos else False
+        
+        # Get photos user has already voted for
+        voted = execute_query(
+            "SELECT PhotoID FROM Votes WHERE UserID = %s AND ContestID = %s",
+            (session['user_id'], contest_id)
+        )
+        user_voted_photos = [v['PhotoID'] for v in voted] if voted else []
     
-    return render_template('contest_detail.html', contest=contest, 
-                         leaderboard=leaderboard, user_submitted=user_submitted)
+    return render_template('contest_detail.html', 
+                         contest=contest, 
+                         leaderboard=leaderboard, 
+                         user_submitted=user_submitted,
+                         user_voted_photos=user_voted_photos)
 
 # ============================================
 # PHOTO SUBMISSION
@@ -303,6 +355,15 @@ def submit_photo(contest_id):
         flash('Contest not found', 'danger')
         return redirect(url_for('contests'))
     
+    # Get user's current coins
+    user = execute_query(
+        "SELECT Coins FROM User WHERE UserID = %s",
+        (session['user_id'],),
+        fetch_one=True
+    )
+    user_coins = user['Coins'] if user and user['Coins'] is not None else 0
+    entry_fee = contest['Entry_fee'] if contest['Entry_fee'] is not None else 0
+    
     if request.method == 'POST':
         title = request.form.get('title')
         photo_file = request.files.get('photo')
@@ -316,25 +377,31 @@ def submit_photo(contest_id):
             return redirect(url_for('submit_photo', contest_id=contest_id))
         
         # Save file
-        filename = secure_filename(f"{session['user_id']}_{datetime.now().timestamp()}_{photo_file.filename}")
+        filename = secure_filename(f"{session['user_id']}_{int(datetime.now().timestamp())}_{photo_file.filename}")
         filepath = os.path.join(app.config['UPLOAD_FOLDER'], filename)
         photo_file.save(filepath)
         
-        # Use stored procedure to submit photo
-        db_filepath = f"/uploads/{filename}"
+        # Use stored procedure to submit photo (it handles coin deduction)
+        db_filepath = f"uploads/{filename}"
         result = call_procedure('sp_submit_photo_to_contest', 
                               (session['user_id'], contest_id, title, db_filepath))
         
-        if result:
-            flash('Photo submitted successfully!', 'success')
-            return redirect(url_for('contest_detail', contest_id=contest_id))
+        if result and len(result) > 0:
+            message = result[0].get('Message', '')
+            if 'successfully' in message.lower():
+                flash(f'Photo submitted successfully! {entry_fee} coins deducted.', 'success')
+                return redirect(url_for('contest_detail', contest_id=contest_id))
+            else:
+                # Failed - delete uploaded file
+                if os.path.exists(filepath):
+                    os.remove(filepath)
+                flash(message, 'danger')
         else:
-            flash('Submission failed. Check if you have enough coins.', 'danger')
-            # Delete uploaded file if submission failed
             if os.path.exists(filepath):
                 os.remove(filepath)
+            flash('Submission failed. Please try again.', 'danger')
     
-    return render_template('submit_photo.html', contest=contest)
+    return render_template('submit_photo.html', contest=contest, user_coins=user_coins, entry_fee=entry_fee)
 
 # ============================================
 # VOTING
@@ -343,13 +410,61 @@ def submit_photo(contest_id):
 @login_required
 def vote(photo_id, contest_id):
     """Cast vote on a photo"""
-    # Call stored procedure
-    result = call_procedure('sp_cast_vote', (session['user_id'], photo_id, contest_id))
+    # First check if the contest is active
+    contest = execute_query(
+        "SELECT Status FROM Contest WHERE ContestID = %s",
+        (contest_id,),
+        fetch_one=True
+    )
     
-    if result:
-        flash('Vote cast successfully!', 'success')
-    else:
-        flash('Vote failed. You may have already voted or have insufficient coins.', 'danger')
+    if not contest:
+        flash('Contest not found!', 'danger')
+        return redirect(url_for('contests'))
+    
+    if contest['Status'] != 'Active':
+        flash('You can only vote in active contests!', 'warning')
+        return redirect(url_for('contest_detail', contest_id=contest_id))
+    
+    # Check if the photo is actually in this contest and approved
+    submission = execute_query("""
+        SELECT pcs.SubmissionStatus, p.UserID 
+        FROM PhotoContestSubmission pcs 
+        JOIN Photo p ON pcs.PhotoID = p.PhotoID 
+        WHERE pcs.PhotoID = %s AND pcs.ContestID = %s
+    """, (photo_id, contest_id), fetch_one=True)
+    
+    if not submission:
+        flash('This photo is not part of this contest!', 'danger')
+        return redirect(url_for('contest_detail', contest_id=contest_id))
+    
+    if submission['SubmissionStatus'] != 'Approved':
+        flash('You can only vote for approved photos!', 'warning')
+        return redirect(url_for('contest_detail', contest_id=contest_id))
+    
+    # Check if user is voting on their own photo
+    if submission['UserID'] == session['user_id']:
+        flash('You cannot vote on your own photo!', 'danger')
+        return redirect(url_for('contest_detail', contest_id=contest_id))
+    
+    try:
+        # Try to insert the vote
+        success = execute_query(
+            "INSERT INTO Votes (UserID, PhotoID, ContestID) VALUES (%s, %s, %s)",
+            (session['user_id'], photo_id, contest_id),
+            commit=True
+        )
+        
+        if success is not None:
+            flash('Vote cast successfully!', 'success')
+        else:
+            flash('An error occurred while casting your vote.', 'danger')
+            
+    except Error as e:
+        error_msg = str(e)
+        if 'duplicate entry' in error_msg.lower():
+            flash('You have already voted for this photo!', 'warning')
+        else:
+            flash(f'Vote failed: {error_msg}', 'danger')
     
     return redirect(url_for('contest_detail', contest_id=contest_id))
 
@@ -402,7 +517,7 @@ def delete_photo(photo_id):
         return redirect(url_for('dashboard'))
     
     # Delete file
-    filepath = os.path.join('static', photo['FilePath'].lstrip('/'))
+    filepath = os.path.join('static', photo['FilePath'])
     if os.path.exists(filepath):
         os.remove(filepath)
     
@@ -457,7 +572,7 @@ def admin_register():
         admin_secret = request.form.get('admin_secret')
         
         # Simple secret code check (you can change this)
-        if admin_secret != 'admin123':
+        if admin_secret != "admin123":
             flash('Invalid admin secret code', 'danger')
             return redirect(url_for('admin_register'))
         
@@ -603,6 +718,36 @@ def api_contest_leaderboard(contest_id):
         (contest_id,)
     )
     return jsonify(leaderboard)
+
+@app.route('/api/admin/update-statuses', methods=['POST'])
+def api_update_statuses():
+    """Update all contest statuses based on current time"""
+    try:
+        connection = get_db_connection()
+        cursor = connection.cursor()
+        
+        # Update statuses
+        cursor.execute("""
+            UPDATE Contest
+            SET Status = CASE
+                WHEN NOW() < StartDate THEN 'Upcoming'
+                WHEN NOW() BETWEEN StartDate AND EndDate THEN 'Active'
+                WHEN NOW() > EndDate THEN 'Completed'
+                ELSE Status
+            END
+            WHERE Status NOT IN ('Cancelled')
+        """)
+        
+        connection.commit()
+        updated_count = cursor.rowcount
+        
+        return jsonify({'success': True, 'updated': updated_count})
+    except Error as e:
+        return jsonify({'success': False, 'error': str(e)}), 500
+    finally:
+        if connection and connection.is_connected():
+            cursor.close()
+            connection.close()
 
 # ============================================
 # ERROR HANDLERS

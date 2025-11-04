@@ -22,6 +22,14 @@
                 <p><strong>Max Participants:</strong> {{ contest.Max_participants }}</p>
             </div>
         </div>
+        
+        {% if session.user_id and contest.Status == 'Active' %}
+            <div class="alert alert-info mt-3">
+                <i class="bi bi-info-circle"></i> 
+                <strong>Voting:</strong> You can vote for any photo except your own. Vote for as many as you like!
+            </div>
+        {% endif %}
+        
         {% if session.user_id and contest.Status == 'Active' and not user_submitted %}
         <a href="{{ url_for('submit_photo', contest_id=contest.ContestID) }}" 
            class="btn btn-primary btn-lg">
@@ -52,22 +60,49 @@
                     {% else %}
                     <div class="rank-badge">#{{ entry.Rank }}</div>
                     {% endif %}
-                    <img src="{{ entry.PhotoTitle }}" alt="{{ entry.PhotoTitle }}" class="img-fluid">
+                    
+                    <!-- Use FilePath for image source -->
+                    <img src="{{ url_for('static', filename=entry.FilePath) }}" alt="{{ entry.PhotoTitle }}" class="img-fluid" 
+                         onerror="this.src='https://via.placeholder.com/400x250?text=Image+Not+Found'">
+                    
                     <div class="p-3 bg-white">
                         <h6>{{ entry.PhotoTitle }}</h6>
                         <p class="mb-2 text-muted">by {{ entry.PhotographerName }}</p>
-                        <div class="d-flex justify-content-between align-items-center">
+                        <div class="d-flex justify-content-between align-items-center mb-2">
                             <span class="badge bg-danger">
                                 <i class="bi bi-heart-fill"></i> {{ entry.TotalVotes }} votes
                             </span>
-                            {% if session.user_id and contest.Status == 'Active' %}
-                            <form method="POST" action="{{ url_for('vote', photo_id=entry.PhotoID, contest_id=contest.ContestID) }}">
-                                <button type="submit" class="btn btn-sm btn-outline-primary">
-                                    <i class="bi bi-hand-thumbs-up"></i> Vote
-                                </button>
-                            </form>
-                            {% endif %}
+                            <span class="badge bg-{{ 'success' if entry.SubmissionStatus == 'Approved' else 'warning' }}">
+                                {{ entry.SubmissionStatus }}
+                            </span>
                         </div>
+                        
+                        {% if entry.SubmissionStatus == 'Approved' %}
+                            {% if session.user_id and contest.Status == 'Active' %}
+                                {% if entry.PhotoID in user_voted_photos %}
+                                    <!-- Already voted -->
+                                    <button class="btn btn-sm btn-success w-100" disabled>
+                                        <i class="bi bi-check2"></i> Voted
+                                    </button>
+                                {% elif entry.PhotographerID == session.user_id %}
+                                    <!-- Own photo -->
+                                    <button class="btn btn-sm btn-secondary w-100" disabled>
+                                        <i class="bi bi-person"></i> Your Photo
+                                    </button>
+                                {% else %}
+                                    <!-- Can vote -->
+                                    <form method="POST" action="{{ url_for('vote', photo_id=entry.PhotoID, contest_id=contest.ContestID) }}">
+                                        <button type="submit" class="btn btn-sm btn-primary w-100">
+                                            <i class="bi bi-hand-thumbs-up"></i> Vote
+                                        </button>
+                                    </form>
+                                {% endif %}
+                            {% endif %}
+                        {% elif entry.SubmissionStatus == 'Pending' and entry.PhotographerID == session.user_id %}
+                            <div class="alert alert-warning py-1 mb-0 text-center">
+                                <small>Awaiting approval</small>
+                            </div>
+                        {% endif %}
                     </div>
                 </div>
             </div>
