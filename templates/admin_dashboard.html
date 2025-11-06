@@ -60,6 +60,78 @@
     </div>
 </div>
 
+<!-- Contest Management -->
+<div class="card mb-4">
+    <div class="card-header bg-white">
+        <h4 class="mb-0">Contest Management</h4>
+    </div>
+    <div class="card-body">
+        {% if contests %}
+        <div class="table-responsive">
+            <table class="table table-hover">
+                <thead>
+                    <tr>
+                        <th>Contest</th>
+                        <th>Status</th>
+                        <th>Dates</th>
+                        <th>Submissions</th>
+                        <th>Votes</th>
+                        <th>Result</th>
+                        <th>Action</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% for contest in contests %}
+                    <tr>
+                        <td>
+                            <strong>{{ contest.Title }}</strong><br>
+                            <small class="text-muted">Prize: {{ contest.Prize_points }} coins</small>
+                        </td>
+                        <td>
+                            <span class="badge bg-{{ 'success' if contest.Status == 'Active' else ('warning' if contest.Status == 'Upcoming' else 'secondary') }}">
+                                {{ contest.Status }}
+                            </span>
+                        </td>
+                        <td>
+                            <small>
+                                {{ contest.StartDate.strftime('%b %d') }} - {{ contest.EndDate.strftime('%b %d, %Y') }}
+                            </small>
+                        </td>
+                        <td>
+                            {{ contest.ApprovedSubmissions }}/{{ contest.TotalSubmissions }}
+                            <small class="text-muted">approved</small>
+                        </td>
+                        <td>{{ contest.TotalVotes }}</td>
+                        <td>
+                            {% if contest.Result %}
+                                <small>{{ contest.Result[:50] }}...</small>
+                            {% else %}
+                                <small class="text-muted">Not finalized</small>
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if contest.Status != 'Completed' and contest.Status != 'Cancelled' %}
+                                <form method="POST" action="{{ url_for('finalize_contest', contest_id=contest.ContestID) }}" class="d-inline">
+                                    <button type="submit" class="btn btn-sm btn-primary" 
+                                            onclick="return confirm('Finalize contest {{ contest.Title }}? This will award prizes to the winner.')">
+                                        <i class="bi bi-award"></i> Finalize
+                                    </button>
+                                </form>
+                            {% else %}
+                                <span class="text-muted">{{ contest.Status }}</span>
+                            {% endif %}
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% else %}
+        <p class="text-center text-muted py-3">No contests found</p>
+        {% endif %}
+    </div>
+</div>
+
 <!-- Recent Submissions -->
 <div class="card">
     <div class="card-header bg-white d-flex justify-content-between align-items-center">

@@ -632,12 +632,26 @@ def admin_dashboard():
         LIMIT 10
     """)
     
+    # Get all contests with their status and submission counts
+    all_contests = execute_query("""
+        SELECT c.*, 
+               COUNT(DISTINCT pcs.PhotoID) as TotalSubmissions,
+               COUNT(DISTINCT CASE WHEN pcs.SubmissionStatus = 'Approved' THEN pcs.PhotoID END) as ApprovedSubmissions,
+               COUNT(DISTINCT v.VoteID) as TotalVotes
+        FROM Contest c
+        LEFT JOIN PhotoContestSubmission pcs ON c.ContestID = pcs.ContestID
+        LEFT JOIN Votes v ON c.ContestID = v.ContestID
+        GROUP BY c.ContestID
+        ORDER BY c.StartDate DESC
+    """)
+    
     return render_template('admin_dashboard.html',
                          total_users=total_users['count'],
                          total_contests=total_contests['count'],
                          total_photos=total_photos['count'],
                          total_votes=total_votes['count'],
-                         submissions=recent_submissions)
+                         submissions=recent_submissions,
+                         contests=all_contests)
 
 @app.route('/admin/contests/create', methods=['GET', 'POST'])
 @admin_required
