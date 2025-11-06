@@ -687,12 +687,36 @@ def approve_submission(submission_id):
 @admin_required
 def finalize_contest(contest_id):
     """Finalize contest and award prizes"""
+    # First check if contest exists and can be finalized
+    contest = execute_query(
+        "SELECT Status FROM Contest WHERE ContestID = %s",
+        (contest_id,),
+        fetch_one=True
+    )
+    
+    if not contest:
+        flash('Contest not found!', 'danger')
+        return redirect(url_for('admin_dashboard'))
+    
+    if contest['Status'] == 'Completed':
+        flash('This contest is already completed!', 'warning')
+        return redirect(url_for('admin_dashboard'))
+    
+    # Call the stored procedure to finalize and award prizes
     result = call_procedure('sp_award_prize_to_winner', (contest_id,))
     
-    if result:
-        flash('Contest finalized and prizes awarded!', 'success')
+    if result and len(result) > 0:
+        message = result[0].get('Message', '')
+        if 'successfully' in message.lower():
+            winner_name = result[0].get('WinnerUserID')
+            prize = result[0].get('PrizeAwarded')
+            photo_title = result[0].get('WinningPhotoTitle')
+            votes = result[0].get('WinningVoteCount')
+            flash(f'Contest finalized! Winner: Photo "{photo_title}" with {votes} votes. Prize of {prize} coins awarded!', 'success')
+        else:
+            flash(message, 'info')
     else:
-        flash('Finalization failed', 'danger')
+        flash('Failed to finalize contest. Please try again.', 'danger')
     
     return redirect(url_for('admin_dashboard'))
 

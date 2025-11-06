@@ -327,15 +327,18 @@ BEGIN
 END//
 DELIMITER ;
 
--- Procedure 5: Award prize to winner (Unchanged)
+-- Procedure 5: Award prize to winner (REFACTORED)
 DELIMITER //
 CREATE PROCEDURE sp_award_prize_to_winner(IN p_contest_id INT)
 BEGIN
-    DECLARE v_winner_user_id INT;
-    DECLARE v_prize_points INT;
+    DECLARE v_winner_user_id INT DEFAULT NULL;
+    DECLARE v_winner_photo_id INT DEFAULT NULL;
+    DECLARE v_prize_points INT DEFAULT 0;
     DECLARE v_winner_photo_title VARCHAR(200);
     DECLARE v_winner_photographer_name VARCHAR(100);
-    DECLARE v_photo_count INT;
+    DECLARE v_photo_count INT DEFAULT 0;
+    DECLARE v_vote_count INT DEFAULT 0;
+    DECLARE v_contest_status VARCHAR(20);
     DECLARE v_sql_state CHAR(5);
     DECLARE v_message TEXT;
     
@@ -348,63 +351,97 @@ BEGIN
     
     START TRANSACTION;
     
-    -- Get prize points
-    SELECT Prize_points INTO v_prize_points
+    -- First check if contest exists and get its details
+    SELECT Status, Prize_points INTO v_contest_status, v_prize_points
     FROM Contest
-    WHERE ContestID = p_contest_id;
+    WHERE ContestID = p_contest_id
+    FOR UPDATE;
     
-    -- Find winner (photo with most votes)
-    SELECT p.UserID, p.Title, u.Name INTO v_winner_user_id, v_winner_photo_title, v_winner_photographer_name
-    FROM Photo p
-    INNER JOIN PhotoContestSubmission pcs ON p.PhotoID = pcs.PhotoID
-    INNER JOIN User u ON p.UserID = u.UserID
-    LEFT JOIN Votes v ON p.PhotoID = v.PhotoID AND v.ContestID = p_contest_id
-    WHERE pcs.ContestID = p_contest_id AND pcs.SubmissionStatus = 'Approved'
-    GROUP BY p.PhotoID, p.UserID, p.Title, u.Name
-    ORDER BY COUNT(v.VoteID) DESC
-    LIMIT 1;
+    IF v_contest_status IS NULL THEN
+        ROLLBACK;
+        SELECT 'Error: Contest not found.' AS Message;
+        RETURN;
+    END IF;
     
-    -- Count approved submissions
+    IF v_contest_status = 'Completed' THEN
+        ROLLBACK;
+        SELECT 'Error: Contest is already completed.' AS Message;
+        RETURN;
+    END IF;
+    
+    -- Get count of approved photos
     SELECT COUNT(*) INTO v_photo_count
     FROM PhotoContestSubmission
     WHERE ContestID = p_contest_id AND SubmissionStatus = 'Approved';
     
-    -- Handle different scenarios
     IF v_photo_count = 0 THEN
         UPDATE Contest
         SET Result = 'Contest completed with no approved submissions.',
             Status = 'Completed'
         WHERE ContestID = p_contest_id;
+            
+        SELECT 'Contest completed with no approved submissions.' AS Message;
+        COMMIT;
+        RETURN;
+    END IF;
     
-    ELSEIF v_winner_user_id IS NULL THEN
-        UPDATE Contest
-        SET Result = 'Contest completed with no votes cast.',
-            Status = 'Completed'
-        WHERE ContestID = p_contest_id;
-
-    ELSE
+    -- Find the winner (photo with most votes)
+    SELECT 
+        p.UserID, p.PhotoID, p.Title, u.Name, COUNT(v.VoteID)
+    INTO 
+        v_winner_user_id, v_winner_photo_id, v_winner_photo_title, 
+        v_winner_photographer_name, v_vote_count
+    FROM Photo p
+    INNER JOIN PhotoContestSubmission pcs ON p.PhotoID = pcs.PhotoID
+    INNER JOIN User u ON p.UserID = u.UserID
+    LEFT JOIN Votes v ON p.PhotoID = v.PhotoID AND v.ContestID = p_contest_id
+    WHERE pcs.ContestID = p_contest_id 
+    AND pcs.SubmissionStatus = 'Approved'
+    GROUP BY p.PhotoID, p.UserID, p.Title, u.Name
+    HAVING COUNT(v.VoteID) > 0
+    ORDER BY COUNT(v.VoteID) DESC
+    LIMIT 1;
+    
+    -- If we found a winner
+    IF v_winner_user_id IS NOT NULL AND v_vote_count > 0 THEN
         -- Award coins to winner
         UPDATE User
         SET Coins = Coins + v_prize_points
         WHERE UserID = v_winner_user_id;
         
-        -- Update contest result
+        -- Update contest status
         UPDATE Contest
-        SET Result = CONCAT('Winner: ', v_winner_photographer_name, ' with photo "', v_winner_photo_title, '" (User ID: ', v_winner_user_id, ')'),
+        SET Result = CONCAT(
+            'Winner: ', v_winner_photographer_name, 
+            ' with photo "', v_winner_photo_title, 
+            '" (User ID: ', v_winner_user_id, 
+            ') - Total Votes: ', v_vote_count
+        ),
+        Status = 'Completed'
+        WHERE ContestID = p_contest_id;
+        
+        SELECT 
+            'Prize awarded successfully' AS Message,
+            v_winner_user_id AS WinnerUserID,
+            v_winner_photo_title AS WinningPhotoTitle,
+            v_winner_photographer_name AS WinnerName,
+            v_vote_count AS VoteCount,
+            v_prize_points AS CoinsAwarded;
+            
+    ELSE
+        -- No winner (no votes)
+        UPDATE Contest
+        SET Result = 'Contest completed with no votes cast.',
             Status = 'Completed'
         WHERE ContestID = p_contest_id;
+            
+        SELECT 
+            'Contest completed with no votes cast.' AS Message,
+            v_photo_count AS ApprovedPhotos,
+            v_vote_count AS TotalVotes;
     END IF;
     
     COMMIT;
-    
-    -- Return success message
-    IF v_winner_user_id IS NOT NULL THEN
-        SELECT 'Prize awarded successfully' AS Message, 
-               v_winner_user_id AS WinnerUserID,
-               v_prize_points AS PrizeAwarded;
-    ELSE
-        SELECT 'Contest completed, no winner declared (no votes or submissions).' AS Message;
-    END IF;
 END//
 DELIMITER ;
 
