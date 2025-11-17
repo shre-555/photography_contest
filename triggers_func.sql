@@ -1,105 +1,6 @@
 -- ============================================
--- SECTION 0: DATABASE SETUP
+-- SECTION 2: TRIGGERS (No Changes)
 -- ============================================
-DROP DATABASE IF EXISTS photo_contest_system;
-CREATE DATABASE photo_contest_system;
-USE photo_contest_system;
-
--- ============================================
--- SECTION 1: TABLE CREATION (No Changes)
--- ============================================
-
-CREATE TABLE User (
-    UserID INT PRIMARY KEY AUTO_INCREMENT,
-    Name VARCHAR(100) NOT NULL,
-    Email VARCHAR(100) UNIQUE NOT NULL,
-    Password_hash VARCHAR(255) NOT NULL,
-    Coins INT DEFAULT 10,
-    CONSTRAINT chk_coins CHECK (Coins >= 0),
-    INDEX idx_email (Email)
-);
-
-CREATE TABLE Admin (
-    AdminID INT PRIMARY KEY AUTO_INCREMENT,
-    Name VARCHAR(100) NOT NULL,
-    Email VARCHAR(100) UNIQUE NOT NULL,
-    Password_hash VARCHAR(255) NOT NULL
-);
-
-CREATE TABLE Contest (
-    ContestID INT PRIMARY KEY AUTO_INCREMENT,
-    Title VARCHAR(200) NOT NULL,
-    StartDate DATETIME NOT NULL,
-    EndDate DATETIME NOT NULL,
-    Status ENUM('Upcoming', 'Active', 'Completed', 'Cancelled') DEFAULT 'Upcoming',
-    Max_participants INT DEFAULT 100,
-    Prize_points INT DEFAULT 0,
-    Entry_fee INT DEFAULT 5,
-    Result VARCHAR(500),
-    Manager_id INT,
-    CONSTRAINT chk_dates CHECK (EndDate >= StartDate),
-    CONSTRAINT chk_max_participants CHECK (Max_participants > 0),
-    CONSTRAINT chk_prize_points CHECK (Prize_points >= 0),
-    CONSTRAINT chk_entry_fee CHECK (Entry_fee >= 0),
-    INDEX idx_status (Status),
-    INDEX idx_dates (StartDate, EndDate),
-    FOREIGN KEY (Manager_id) REFERENCES Admin(AdminID) ON DELETE SET NULL
-);
-
-CREATE TABLE Photo (
-    PhotoID INT PRIMARY KEY AUTO_INCREMENT,
-    Title VARCHAR(200) NOT NULL,
-    FilePath VARCHAR(500) NOT NULL,
-    UploadDate DATETIME DEFAULT CURRENT_TIMESTAMP,
-    UserID INT NOT NULL,
-    FOREIGN KEY (UserID) REFERENCES User(UserID) ON DELETE CASCADE,
-    INDEX idx_user_photo (UserID),
-    INDEX idx_upload_date (UploadDate)
-);
-
-CREATE TABLE PhotoContestSubmission (
-    SubmissionID INT PRIMARY KEY AUTO_INCREMENT,
-    PhotoID INT NOT NULL,
-    ContestID INT NOT NULL,
-    SubmissionTimestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    SubmissionStatus ENUM('Pending', 'Approved', 'Rejected') DEFAULT 'Pending',
-    FOREIGN KEY (PhotoID) REFERENCES Photo(PhotoID) ON DELETE CASCADE,
-    FOREIGN KEY (ContestID) REFERENCES Contest(ContestID) ON DELETE CASCADE,
-    UNIQUE KEY unique_submission (PhotoID, ContestID),
-    INDEX idx_contest_submissions (ContestID),
-    INDEX idx_photo_submissions (PhotoID)
-);
-
-CREATE TABLE Votes (
-    VoteID INT PRIMARY KEY AUTO_INCREMENT,
-    UserID INT NOT NULL,
-    PhotoID INT NOT NULL,
-    ContestID INT NOT NULL,
-    Vote_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY (UserID) REFERENCES User(UserID) ON DELETE CASCADE,
-    FOREIGN KEY (PhotoID) REFERENCES Photo(PhotoID) ON DELETE CASCADE,
-    FOREIGN KEY (ContestID) REFERENCES Contest(ContestID) ON DELETE CASCADE,
-    UNIQUE KEY unique_vote (UserID, PhotoID, ContestID),
-    INDEX idx_contest_votes (ContestID),
-    INDEX idx_photo_votes (PhotoID),
-    INDEX idx_user_votes (UserID)
-);
-
-CREATE TABLE Contest_Audit (
-    AuditID INT PRIMARY KEY AUTO_INCREMENT,
-    ContestID INT NOT NULL,
-    Action VARCHAR(100),
-    Timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    INDEX idx_audit_contest (ContestID)
-);
-
-
--- ============================================
--- SECTION 2: TRIGGERS (REFACTORED)
--- ============================================
-
--- REFACTOR: Removed trg_check_and_deduct_coins_before_submission
--- This logic is now handled in sp_submit_photo_to_contest
 
 -- This trigger is still necessary
 DELIMITER //
@@ -187,8 +88,8 @@ BEGIN
     END;
     
     START TRANSACTION;
-    INSERT INTO User (Name, Email, Password_hash, Coins)
-    VALUES (p_name, p_email, SHA2(p_password, 256), 10);
+    INSERT INTO User (Name, Email, Password, Coins)
+    VALUES (p_name, p_email, p_password, 10);
     COMMIT;
     SELECT 'User registered successfully' AS Message, LAST_INSERT_ID() AS UserID;
 END//
@@ -209,17 +110,28 @@ BEGIN
     DECLARE v_user_coins INT;
     DECLARE v_entry_fee INT;
     
+    -- *** BEGIN FIX ***
+    -- This EXIT HANDLER is now robust and correctly identifies errors
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
         GET DIAGNOSTICS CONDITION 1 v_sql_state = RETURNED_SQLSTATE, v_message = MESSAGE_TEXT;
-        SELECT CONCAT('Error: Photo submission failed. ', v_message) AS Message;
+        
+        -- *** BEGIN FIX 2 ***
+        IF v_sql_state = '45000' THEN -- Custom trigger error (contest status)
+            -- We CANNOT rely on v_message from a trigger.
+            -- The trigger has multiple possible messages, so we give a generic one.
+            SELECT 'Error: Submission failed. The contest is not active, has ended, or is cancelled.' AS Message;
+        ELSEIF v_sql_state = '23000' THEN -- Duplicate submission
+            SELECT 'Error: This photo has already been submitted to this contest.' AS Message;
+        ELSE -- All other unexpected errors
+            SELECT CONCAT('Error: Photo submission failed. SQLSTATE: ', v_sql_state, ' Message: ', v_message) AS Message;
+        END IF;
+        -- *** END FIX 2 ***
     END;
+    -- *** END FIX ***
     
     START TRANSACTION;
-    
-    -- *** BEGIN REFACTOR ***
-    -- Logic moved from trigger to procedure
     
     -- 1. Get contest fee and user coins (and lock the user row)
     SELECT COALESCE(Entry_fee, 0) INTO v_entry_fee 
@@ -252,12 +164,11 @@ BEGIN
         COMMIT;
         SELECT 'Photo submitted successfully' AS Message, v_photo_id AS PhotoID;
     END IF;
-    -- *** END REFACTOR ***
     
 END//
 DELIMITER ;
 
--- Procedure 3: Cast vote on a photo (Unchanged)
+-- Procedure 3: Cast vote on a photo (REFACTORED TO FIX BUG)
 DELIMITER //
 CREATE PROCEDURE sp_cast_vote(
     IN p_user_id INT,
@@ -268,24 +179,25 @@ BEGIN
     DECLARE v_sql_state CHAR(5);
     DECLARE v_message TEXT;
 
+    -- *** BEGIN FIX ***
+    -- This EXIT HANDLER is new and correctly identifies voting-specific errors
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
         GET DIAGNOSTICS CONDITION 1 v_sql_state = RETURNED_SQLSTATE, v_message = MESSAGE_TEXT;
         
-        -- REFACTOR: Handle trigger errors ('45000') and duplicate key errors ('23000') explicitly.
-        IF v_sql_state = '45000' THEN -- Custom trigger error (e.g., contest not active)
-            IF v_message IS NULL OR v_message = '' THEN
-                 SELECT 'Error: Submission failed. Contest is not in a valid state.' AS Message;
-            ELSE
-                 SELECT v_message AS Message; -- Return the trigger's message
-            END IF;
-        ELSEIF v_sql_state = '23000' THEN -- Duplicate submission
-            SELECT 'Error: This photo has already been submitted to this contest.' AS Message;
+        -- *** BEGIN FIX 2 ***
+        IF v_sql_state = '45000' THEN -- Custom trigger error (self-voting)
+            -- We CANNOT rely on v_message from a trigger. We know it's the self-vote trigger.
+            SELECT 'Error: You cannot vote on your own photo.' AS Message;
+        ELSEIF v_sql_state = '23000' THEN -- Duplicate vote
+            SELECT 'Error: You have already voted for this photo in this contest.' AS Message;
         ELSE -- All other unexpected errors
-            SELECT CONCAT('Error: Photo submission failed due to an unexpected database error. SQLSTATE: ', v_sql_state) AS Message;
+            SELECT CONCAT('Error: Vote casting failed. SQLSTATE: ', v_sql_state, ' Message: ', v_message) AS Message;
         END IF;
+        -- *** END FIX 2 ***
     END;
+    -- *** END FIX ***
     
     START TRANSACTION;
     INSERT INTO Votes (UserID, PhotoID, ContestID)
@@ -310,78 +222,121 @@ BEGIN
     INNER JOIN User u ON p.UserID = u.UserID
     LEFT JOIN Votes v ON p.PhotoID = v.PhotoID AND v.ContestID = p_contest_id
     WHERE pcs.ContestID = p_contest_id AND pcs.SubmissionStatus = 'Approved'
-    DECLARE v_message TEXT;
+    GROUP BY p.PhotoID, p.Title, u.Name
+    ORDER BY TotalVotes DESC;
+END//
+DELIMITER ;
 
+-- Procedure 5: Award prize to winner (REFACTORED)
+DELIMITER //
+CREATE PROCEDURE sp_award_prize_to_winner(IN p_contest_id INT)
+BEGIN
+    DECLARE v_winner_user_id INT DEFAULT NULL;
+    DECLARE v_winner_photo_id INT DEFAULT NULL;
+    DECLARE v_prize_points INT DEFAULT 0;
+    DECLARE v_winner_photo_title VARCHAR(200) DEFAULT NULL;
+    DECLARE v_winner_photographer_name VARCHAR(100) DEFAULT NULL;
+    DECLARE v_photo_count INT DEFAULT 0;
+    DECLARE v_vote_count INT DEFAULT 0;
+    DECLARE v_max_votes INT DEFAULT 0;
+    DECLARE v_contest_status VARCHAR(20);
+    
     DECLARE EXIT HANDLER FOR SQLEXCEPTION
     BEGIN
         ROLLBACK;
-        GET DIAGNOSTICS CONDITION 1 v_sql_state = RETURNED_SQLSTATE, v_message = MESSAGE_TEXT;
-        
-        -- REFACTOR: Handle self-voting ('45000') and duplicate key errors ('23000') explicitly.
-        IF v_sql_state = '23000' THEN -- Unique constraint (duplicate vote)
-            SELECT 'Error: You have already voted for this photo in this contest.' AS Message;
-        ELSEIF v_sql_state = '45000' THEN -- Custom trigger error (self-voting)
-            IF v_message IS NULL OR v_message = '' THEN
-                 SELECT 'Error: Vote failed. A custom rule was violated (e.g., self-voting).' AS Message;
-            ELSE
-                 SELECT v_message AS Message; -- Just return the trigger's message directly
-            END IF;
-        ELSE -- All other unexpected errors
-            SELECT CONCAT('Error: Vote casting failed due to an unexpected database error. SQLSTATE: ', v_sql_state) AS Message;
-        END IF;
+        SELECT 'Error: Prize awarding failed. Please check the error log.' AS Message;
     END;
     
     START TRANSACTION;
     
-    SELECT Prize_points INTO v_prize_points
+    -- Check if contest exists and get its details
+    SELECT Status, Prize_points INTO v_contest_status, v_prize_points
     FROM Contest
-    WHERE ContestID = p_contest_id;
+    WHERE ContestID = p_contest_id
+    FOR UPDATE;
     
-    SELECT p.UserID, p.Title, u.Name INTO v_winner_user_id, v_winner_photo_title, v_winner_photographer_name
-    FROM Photo p
-    INNER JOIN PhotoContestSubmission pcs ON p.PhotoID = pcs.PhotoID
-    INNER JOIN User u ON p.UserID = u.UserID
-    LEFT JOIN Votes v ON p.PhotoID = v.PhotoID AND v.ContestID = p_contest_id
-    WHERE pcs.ContestID = p_contest_id AND pcs.SubmissionStatus = 'Approved'
-    GROUP BY p.PhotoID, p.UserID, p.Title, u.Name
-    ORDER BY COUNT(v.VoteID) DESC
-    LIMIT 1;
-    
-    SELECT COUNT(*) INTO v_photo_count
-    FROM PhotoContestSubmission
-    WHERE ContestID = p_contest_id AND SubmissionStatus = 'Approved';
-    
-    IF v_photo_count = 0 THEN
-        UPDATE Contest
-        SET Result = 'Contest completed with no approved submissions.',
-            Status = 'Completed'
-        WHERE ContestID = p_contest_id;
-    
-    ELSEIF v_winner_user_id IS NULL THEN
-        UPDATE Contest
-        SET Result = 'Contest completed with no votes cast.',
-            Status = 'Completed'
-        WHERE ContestID = p_contest_id;
-
+    IF v_contest_status IS NULL THEN
+        ROLLBACK;
+        SELECT 'Error: Contest not found.' AS Message;
     ELSE
-        UPDATE User
-        SET Coins = Coins + v_prize_points
-        WHERE UserID = v_winner_user_id;
-        
-        UPDATE Contest
-        SET Result = CONCAT('Winner: ', v_winner_photographer_name, ' with photo "', v_winner_photo_title, '" (User ID: ', v_winner_user_id, ')'),
-            Status = 'Completed'
-        WHERE ContestID = p_contest_id;
-    END IF;
-    
-    COMMIT;
-    
-    IF v_winner_user_id IS NOT NULL THEN
-        SELECT 'Prize awarded successfully' AS Message, 
-               v_winner_user_id AS WinnerUserID,
-               v_prize_points AS PrizeAwarded;
-    ELSE
-        SELECT 'Contest completed, no winner declared (no votes or submissions).' AS Message;
+        IF v_contest_status = 'Completed' THEN
+            ROLLBACK;
+            SELECT 'Error: Contest is already completed.' AS Message;
+        ELSE
+            -- Count approved submissions
+            SELECT COUNT(*) INTO v_photo_count
+            FROM PhotoContestSubmission
+            WHERE ContestID = p_contest_id AND SubmissionStatus = 'Approved';
+            
+            IF v_photo_count = 0 THEN
+                -- No approved submissions
+                UPDATE Contest
+                SET Result = 'Contest completed with no approved submissions.',
+                    Status = 'Completed'
+                WHERE ContestID = p_contest_id;
+                    
+                COMMIT;
+                SELECT 'Contest completed with no approved submissions.' AS Message;
+            ELSE
+                -- Find winner - photo with most votes
+                SELECT 
+                    p.UserID, p.PhotoID, p.Title, u.Name, COUNT(v.VoteID)
+                INTO 
+                    v_winner_user_id, v_winner_photo_id, v_winner_photo_title, 
+                    v_winner_photographer_name, v_vote_count
+                FROM Photo p
+                INNER JOIN PhotoContestSubmission pcs ON p.PhotoID = pcs.PhotoID
+                INNER JOIN User u ON p.UserID = u.UserID
+                LEFT JOIN Votes v ON p.PhotoID = v.PhotoID AND v.ContestID = p_contest_id
+                WHERE pcs.ContestID = p_contest_id 
+                  AND pcs.SubmissionStatus = 'Approved'
+                GROUP BY p.PhotoID, p.UserID, p.Title, u.Name
+                ORDER BY COUNT(v.VoteID) DESC
+                LIMIT 1;
+                
+                -- Check if we have a valid winner (at least 1 vote)
+                IF v_winner_user_id IS NOT NULL AND v_vote_count > 0 THEN
+                    -- Award coins to winner
+                    UPDATE User
+                    SET Coins = Coins + v_prize_points
+                    WHERE UserID = v_winner_user_id;
+                    
+                    -- Update contest with result
+                    UPDATE Contest
+                    SET Result = CONCAT(
+                        'Winner: ', v_winner_photographer_name, 
+                        ' with photo "', v_winner_photo_title, 
+                        '" (User ID: ', v_winner_user_id, 
+                        ') - Votes: ', v_vote_count
+                    ),
+                    Status = 'Completed'
+                    WHERE ContestID = p_contest_id;
+                    
+                    COMMIT;
+                    
+                    SELECT 
+                        'Prize awarded successfully' AS Message,
+                        v_winner_user_id AS WinnerUserID,
+                        v_winner_photo_title AS WinningPhotoTitle,
+                        v_winner_photographer_name AS WinnerName,
+                        v_vote_count AS VoteCount,
+                        v_prize_points AS CoinsAwarded;
+                        
+                ELSE
+                    -- No votes cast
+                    UPDATE Contest
+                    SET Result = 'Contest completed with no votes cast.',
+                        Status = 'Completed'
+                    WHERE ContestID = p_contest_id;
+                    
+                    COMMIT;
+                    
+                    SELECT 
+                        'Contest completed with no votes cast.' AS Message,
+                        v_photo_count AS ApprovedPhotos;
+                END IF;
+            END IF;
+        END IF;
     END IF;
 END//
 DELIMITER ;
@@ -406,7 +361,7 @@ BEGIN
     WHERE u.UserID = p_user_id
     GROUP BY u.UserID, u.Name, u.Email, u.Coins;
 END//
-DELIMITMTER ;
+DELIMITER ;
 
 -- Procedure 7: Update contest status (Unchanged)
 DELIMITER //
@@ -428,7 +383,7 @@ END//
 DELIMITER ;
 
 -- ============================================
--- SECTION 4: FUNCTIONS (Unchanged)
+-- SECTION 4: FUNCTIONS (No Changes)
 -- ============================================
 
 -- Voting is free, so this just returns TRUE
@@ -507,6 +462,7 @@ READS SQL DATA
 BEGIN
     DECLARE v_rank INT DEFAULT 0;
     
+    -- Using a subquery to find the rank
     SELECT COALESCE(user_rank, 0) INTO v_rank
     FROM (
         SELECT 
@@ -564,7 +520,7 @@ SELECT
     u.UserID, u.Name, u.Email, u.Coins,
     COUNT(DISTINCT p.PhotoID) AS PhotosUploaded,
     COUNT(DISTINCT pcs.SubmissionID) AS ContestParticipations,
-    COUNT(DISTDINCT v.VoteID) AS VotesCast,
+    COUNT(DISTINCT v.VoteID) AS VotesCast,
     (SELECT COUNT(*) FROM Votes WHERE PhotoID IN 
         (SELECT PhotoID FROM Photo WHERE UserID = u.UserID)) AS VotesReceived
 FROM User u
